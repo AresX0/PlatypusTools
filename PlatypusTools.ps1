@@ -3064,8 +3064,182 @@ function Strip-ExistingEpisodeTags {
   return $clean
 }
 
+function Get-CoreNameForSorting {
+  <#
+  .SYNOPSIS
+  Extract the "core" name for alphabetical sorting, ignoring:
+  - Prefix (detected or specified)
+  - Season tags (S01, S1, Season 1, etc.)
+  - Episode tags (E01, E1, Episode 1, etc.)
+  - Common resolution/quality tags
+  #>
+  param([string]$FileName)
+  if (-not $FileName) { return "" }
+  
+  $base = [System.IO.Path]::GetFileNameWithoutExtension($FileName)
+  
+  # Remove common prefixes if detected
+  $detected = if ($TxtDetectedPrefix -and $TxtDetectedPrefix.Text) { $TxtDetectedPrefix.Text.Trim() } else { "" }
+  $oldPrefix = if ($TxtOldPrefix -and $TxtOldPrefix.Text) { $TxtOldPrefix.Text.Trim() } else { "" }
+  $newPrefix = if ($TxtNewPrefix -and $TxtNewPrefix.Text) { $TxtNewPrefix.Text.Trim() } else { "" }
+  
+  # Strip any known prefix
+  foreach ($prefix in @($detected, $oldPrefix, $newPrefix)) {
+    if ($prefix -and $base.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+      $base = $base.Substring($prefix.Length)
+      break
+    }
+  }
+  
+  # Remove season/episode patterns
+  $base = $base -replace '(?i)\bS\d{1,4}\s*E\d{1,4}\b', ''      # S01E01, S1E1
+  $base = $base -replace '(?i)\bSeason\s*\d{1,4}\b', ''         # Season 1
+  $base = $base -replace '(?i)\bS\d{1,4}\b', ''                 # S01
+  $base = $base -replace '(?i)\bE\d{1,4}\b', ''                 # E01
+  $base = $base -replace '(?i)\bEpisode\s*\d{1,4}\b', ''        # Episode 1
+  $base = $base -replace '(?i)\bEp\s*\d{1,4}\b', ''             # Ep 1
+  $base = $base -replace '(?i)\b\d{1,4}x\d{1,4}\b', ''          # 1x01
+  
+  # Remove resolution/quality tags
+  $base = $base -replace '(?i)\b720p\b', ''
+  $base = $base -replace '(?i)\b1080p\b', ''
+  $base = $base -replace '(?i)\b4k\b', ''
+  $base = $base -replace '(?i)\bHD\b', ''
+  $base = $base -replace '(?i)\bHDTV\b', ''
+  $base = $base -replace '(?i)\bWEBRip\b', ''
+  $base = $base -replace '(?i)\bBluRay\b', ''
+  
+  # Clean up separators and whitespace
+  $base = $base -replace '[\-_\.]+', ' '
+  $base = $base -replace '\s+', ' '
+  $base = $base.Trim(' ', '-', '_', '.')
+  
+  return $base.ToLower()
+}
+
+# Hashtable to store extracted filename components for renumber operations
+$script:FileComponents = @{}
+
+function Get-FilenameComponents {
+  <#
+  .SYNOPSIS
+  Extract all components from a filename: prefix, season, episode, and core name.
+  Returns a PSCustomObject with these properties for later use in renaming.
+  #>
+  param([string]$FileName)
+  
+  $result = [PSCustomObject]@{
+    OriginalName = $FileName
+    Prefix = ""
+    Season = ""
+    SeasonNum = 0
+    Episode = ""
+    EpisodeNum = 0
+    CoreName = ""
+    Extension = ""
+  }
+  
+  if (-not $FileName) { return $result }
+  
+  $result.Extension = [System.IO.Path]::GetExtension($FileName)
+  $base = [System.IO.Path]::GetFileNameWithoutExtension($FileName)
+  $workingBase = $base
+  
+  # Detect and extract prefix (from UI fields)
+  $detected = if ($TxtDetectedPrefix -and $TxtDetectedPrefix.Text) { $TxtDetectedPrefix.Text.Trim() } else { "" }
+  $oldPrefix = if ($TxtOldPrefix -and $TxtOldPrefix.Text) { $TxtOldPrefix.Text.Trim() } else { "" }
+  $newPrefix = if ($TxtNewPrefix -and $TxtNewPrefix.Text) { $TxtNewPrefix.Text.Trim() } else { "" }
+  
+  foreach ($prefix in @($detected, $oldPrefix, $newPrefix)) {
+    if ($prefix -and $workingBase.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+      $result.Prefix = $workingBase.Substring(0, $prefix.Length)
+      $workingBase = $workingBase.Substring($prefix.Length).TrimStart(' ', '-', '_', '.')
+      break
+    }
+  }
+  
+  # If no UI prefix detected, try to infer prefix (first word/segment before separator)
+  if (-not $result.Prefix -and $workingBase -match '^(?<prefix>[^\s\-_\.]+)[\s\-_\.]') {
+    $result.Prefix = $matches.prefix
+    $workingBase = $workingBase.Substring($matches.prefix.Length).TrimStart(' ', '-', '_', '.')
+  }
+  
+  # Extract season/episode patterns - S##E##
+  if ($workingBase -match '(?i)\bS(\d{1,4})\s*E(\d{1,4})\b') {
+    $result.SeasonNum = [int]$matches[1]
+    $result.EpisodeNum = [int]$matches[2]
+    $result.Season = "S" + $result.SeasonNum.ToString().PadLeft(2,'0')
+    $result.Episode = "E" + $result.EpisodeNum.ToString().PadLeft(2,'0')
+    $workingBase = $workingBase -replace '(?i)\bS\d{1,4}\s*E\d{1,4}\b', ''
+  }
+  # Season only - S##
+  elseif ($workingBase -match '(?i)\bS(\d{1,4})\b') {
+    $result.SeasonNum = [int]$matches[1]
+    $result.Season = "S" + $result.SeasonNum.ToString().PadLeft(2,'0')
+    $workingBase = $workingBase -replace '(?i)\bS\d{1,4}\b', ''
+    # Check for separate episode
+    if ($workingBase -match '(?i)\bE(\d{1,4})\b') {
+      $result.EpisodeNum = [int]$matches[1]
+      $result.Episode = "E" + $result.EpisodeNum.ToString().PadLeft(2,'0')
+      $workingBase = $workingBase -replace '(?i)\bE\d{1,4}\b', ''
+    }
+  }
+  # Format: 1x01
+  elseif ($workingBase -match '(?i)\b(\d{1,4})x(\d{1,4})\b') {
+    $result.SeasonNum = [int]$matches[1]
+    $result.EpisodeNum = [int]$matches[2]
+    $result.Season = "S" + $result.SeasonNum.ToString().PadLeft(2,'0')
+    $result.Episode = "E" + $result.EpisodeNum.ToString().PadLeft(2,'0')
+    $workingBase = $workingBase -replace '(?i)\b\d{1,4}x\d{1,4}\b', ''
+  }
+  # Season ## or Season # 
+  elseif ($workingBase -match '(?i)\bSeason\s*(\d{1,4})\b') {
+    $result.SeasonNum = [int]$matches[1]
+    $result.Season = "S" + $result.SeasonNum.ToString().PadLeft(2,'0')
+    $workingBase = $workingBase -replace '(?i)\bSeason\s*\d{1,4}\b', ''
+  }
+  # Standalone E## (episode only, no season) - must check this separately
+  elseif ($workingBase -match '(?i)^E(\d{1,4})\b' -or $workingBase -match '(?i)[\s\-_\.]E(\d{1,4})\b') {
+    if ($workingBase -match '(?i)\bE(\d{1,4})\b') {
+      $result.EpisodeNum = [int]$matches[1]
+      $result.Episode = "E" + $result.EpisodeNum.ToString().PadLeft(2,'0')
+      $workingBase = $workingBase -replace '(?i)\bE\d{1,4}\b', ''
+    }
+  }
+  # Episode ## or Ep ## (spelled out)
+  if ($workingBase -match '(?i)\b(?:Episode|Ep)\s*(\d{1,4})\b') {
+    $result.EpisodeNum = [int]$matches[1]
+    $result.Episode = "E" + $result.EpisodeNum.ToString().PadLeft(2,'0')
+    $workingBase = $workingBase -replace '(?i)\b(?:Episode|Ep)\s*\d{1,4}\b', ''
+  }
+  
+  # Remove resolution/quality tags from core name
+  $workingBase = $workingBase -replace '(?i)\b720p\b', ''
+  $workingBase = $workingBase -replace '(?i)\b1080p\b', ''
+  $workingBase = $workingBase -replace '(?i)\b4k\b', ''
+  $workingBase = $workingBase -replace '(?i)\bHD\b', ''
+  $workingBase = $workingBase -replace '(?i)\bHDTV\b', ''
+  $workingBase = $workingBase -replace '(?i)\bWEBRip\b', ''
+  $workingBase = $workingBase -replace '(?i)\bBluRay\b', ''
+  
+  # Clean up and store core name
+  $workingBase = $workingBase -replace '[\-_\.]+', ' '
+  $workingBase = $workingBase -replace '\s+', ' '
+  $workingBase = $workingBase.Trim(' ', '-', '_', '.')
+  $result.CoreName = $workingBase
+  
+  return $result
+}
+
 function Get-ProposedName {
     param([System.IO.FileInfo]$File,[int]$EpisodeNumber,[switch]$ForceEpisode)
+    
+    # Check if we have stored components from renumber operation
+    $storedComponents = $null
+    if ($ChkRenumberAll.IsChecked -and $script:FileComponents -and $script:FileComponents.ContainsKey($File.FullName)) {
+      $storedComponents = $script:FileComponents[$File.FullName]
+    }
+    
     $base = [System.IO.Path]::GetFileNameWithoutExtension($File.Name)
     $ext  = $File.Extension
     $originalBase = $base
@@ -3078,6 +3252,50 @@ function Get-ProposedName {
         $t = $token.Trim(); if ($t) { $base = $base -replace '(?i)' + [Regex]::Escape($t), '' }
       }
     }
+    
+    # If renumbering with stored components, use them to build the new name
+    if ($storedComponents -and $ForceEpisode) {
+      $episodeDigits = 2; if ($CmbEpisodeDigits.SelectedItem -and $CmbEpisodeDigits.SelectedItem.Content) { [void][int]::TryParse($CmbEpisodeDigits.SelectedItem.Content.ToString(), [ref]$episodeDigits) }
+      $seasonDigits = 2; if ($CmbSeasonDigits.SelectedItem -and $CmbSeasonDigits.SelectedItem.Content) { [void][int]::TryParse($CmbSeasonDigits.SelectedItem.Content.ToString(), [ref]$seasonDigits) }
+      
+      # Use stored prefix, or new prefix if specified
+      $usePrefix = $storedComponents.Prefix
+      $newPrefix = if ($TxtNewPrefix.Text) { $TxtNewPrefix.Text.Trim() } else { "" }
+      if ($ChkChangePrefix.IsChecked -and $newPrefix) { $usePrefix = $newPrefix }
+      elseif ($ChkAddPrefixAll.IsChecked -and $newPrefix) { $usePrefix = $newPrefix }
+      
+      # Build season/episode tag
+      $seasonStr = ""; $episodeStr = ""
+      # Use original season if present, or from UI
+      if ($storedComponents.SeasonNum -gt 0) {
+        $seasonStr = "S" + $storedComponents.SeasonNum.ToString().PadLeft($seasonDigits,'0')
+      } elseif ($ChkAddSeason.IsChecked) {
+        $seasonNum = 0; [void][int]::TryParse($TxtSeason.Text, [ref]$seasonNum)
+        if ($seasonNum -gt 0) { $seasonStr = "S" + $seasonNum.ToString().PadLeft($seasonDigits,'0') }
+      }
+      # New episode number from counter
+      $episodeStr = "E" + $EpisodeNumber.ToString().PadLeft($episodeDigits,'0')
+      
+      $tag = if ($seasonStr -and $episodeStr) {
+        if ($ChkSeasonBeforeEpisode.IsChecked) { "$seasonStr$episodeStr" } else { "$episodeStr$seasonStr" }
+      } elseif ($seasonStr -or $episodeStr) { "$seasonStr$episodeStr" } else { "" }
+      
+      # Build final name: Prefix-Tag-CoreName.ext
+      $coreName = $storedComponents.CoreName
+      if (-not $coreName) { $coreName = $base }
+      
+      $segments = @()
+      if ($usePrefix) { $segments += $usePrefix }
+      if ($tag) { $segments += $tag }
+      if ($coreName) { $segments += $coreName }
+      
+      $finalNameNoExt = ($segments -join "-").Trim()
+      $finalNameNoExt = Normalize-NameSpaces $finalNameNoExt
+      if (-not $finalNameNoExt) { $finalNameNoExt = $originalBase }
+      
+      return ($finalNameNoExt + $ext)
+    }
+    
     if ($ChkRenumberAll.IsChecked) {
       $base = Strip-ExistingEpisodeTags $base
       $originalBase = Strip-ExistingEpisodeTags $originalBase
@@ -3277,7 +3495,16 @@ $BtnScan.Add_Click({
     $files = Get-FilteredFiles -Path $TxtFolder.Text -Recurse:$ChkRecurse.IsChecked
     if ($ChkOnlyIfOldPrefix.IsChecked -and $TxtOldPrefix.Text) { $oldPref = $TxtOldPrefix.Text.Trim(); $files = $files | Where-Object { $_.BaseName.StartsWith($oldPref, [System.StringComparison]::OrdinalIgnoreCase) } }
     if ($TxtIgnorePrefix.Text) { $ignorePref = $TxtIgnorePrefix.Text.Trim(); if ($ignorePref) { $files = $files | Where-Object { -not $_.BaseName.StartsWith($ignorePref, [System.StringComparison]::OrdinalIgnoreCase) } } }
-    if ($ChkRenumberAll.IsChecked) { $files = $files | Sort-Object Name }
+    
+    # Extract and store filename components before sorting
+    $script:FileComponents = @{}
+    if ($ChkRenumberAll.IsChecked) {
+      foreach ($f in $files) {
+        $script:FileComponents[$f.FullName] = Get-FilenameComponents $f.Name
+      }
+      $files = $files | Sort-Object { $script:FileComponents[$_.FullName].CoreName.ToLower() }
+    }
+    
     $preview = @(); $episodeCounter = $startNum; $hasEpisodeOps = $ChkRenumberAll.IsChecked -or $ChkAddEpisode.IsChecked
     foreach ($f in $files) {
       if ($ChkRenumberAll.IsChecked) { $proposed = Get-ProposedName -File $f -EpisodeNumber $episodeCounter -ForceEpisode; $episodeCounter++ }
@@ -4476,33 +4703,48 @@ function Set-UsbProgress {
 function Get-RemovableDrives {
     <#
     .SYNOPSIS
-    Get list of removable USB drives
+    Get list of removable USB drives using multiple detection methods
     #>
     $drives = @()
     try {
-        $diskDrives = Get-CimInstance -ClassName Win32_DiskDrive | Where-Object { $_.MediaType -match "Removable" -or $_.InterfaceType -eq "USB" }
+        # Method 1: Try to get USB/Removable drives via Win32_DiskDrive
+        $diskDrives = Get-CimInstance -ClassName Win32_DiskDrive -ErrorAction SilentlyContinue | 
+            Where-Object { $_.MediaType -match "Removable" -or $_.InterfaceType -eq "USB" }
+        
         foreach ($disk in $diskDrives) {
-            $partitions = Get-CimInstance -Query "ASSOCIATORS OF {Win32_DiskDrive.DeviceID='$($disk.DeviceID.Replace('\','\\'))'} WHERE AssocClass=Win32_DiskDriveToDiskPartition"
-            foreach ($partition in $partitions) {
-                $logicalDisks = Get-CimInstance -Query "ASSOCIATORS OF {Win32_DiskPartition.DeviceID='$($partition.DeviceID)'} WHERE AssocClass=Win32_LogicalDiskToPartition"
-                foreach ($logical in $logicalDisks) {
-                    $sizeGB = [math]::Round($disk.Size / 1GB, 2)
-                    $freeGB = [math]::Round($logical.FreeSpace / 1GB, 2)
-                    $drives += [PSCustomObject]@{
-                        DriveLetter = $logical.DeviceID
-                        Label = $logical.VolumeName
-                        FileSystem = $logical.FileSystem
-                        SizeGB = $sizeGB
-                        FreeGB = $freeGB
-                        DiskNumber = $disk.Index
-                        Model = $disk.Model
-                        DisplayName = "$($logical.DeviceID) - $($disk.Model) ($sizeGB GB)"
-                    }
+            $foundLogical = $false
+            try {
+                # Escape backslashes for WMI query
+                $escapedDeviceId = $disk.DeviceID.Replace('\','\\')
+                $partitions = Get-CimInstance -Query "ASSOCIATORS OF {Win32_DiskDrive.DeviceID='$escapedDeviceId'} WHERE AssocClass=Win32_DiskDriveToDiskPartition" -ErrorAction SilentlyContinue
+                
+                foreach ($partition in $partitions) {
+                    try {
+                        $logicalDisks = Get-CimInstance -Query "ASSOCIATORS OF {Win32_DiskPartition.DeviceID='$($partition.DeviceID)'} WHERE AssocClass=Win32_LogicalDiskToPartition" -ErrorAction SilentlyContinue
+                        foreach ($logical in $logicalDisks) {
+                            $sizeGB = [math]::Round($disk.Size / 1GB, 2)
+                            $freeGB = if ($logical.FreeSpace) { [math]::Round($logical.FreeSpace / 1GB, 2) } else { 0 }
+                            $drives += [PSCustomObject]@{
+                                DriveLetter = $logical.DeviceID
+                                Label = $logical.VolumeName
+                                FileSystem = $logical.FileSystem
+                                SizeGB = $sizeGB
+                                FreeGB = $freeGB
+                                DiskNumber = $disk.Index
+                                Model = $disk.Model
+                                DisplayName = "$($logical.DeviceID) - $($disk.Model) ($sizeGB GB)"
+                            }
+                            $foundLogical = $true
+                        }
+                    } catch { }
                 }
+            } catch {
+                Write-UsbLog "Partition query failed for disk $($disk.Index): $($_.Exception.Message)"
             }
-            # Handle disks without partitions
-            if (-not $partitions) {
-                $sizeGB = [math]::Round($disk.Size / 1GB, 2)
+            
+            # Handle disks without partitions or when query failed
+            if (-not $foundLogical) {
+                $sizeGB = if ($disk.Size) { [math]::Round($disk.Size / 1GB, 2) } else { 0 }
                 $drives += [PSCustomObject]@{
                     DriveLetter = "Disk $($disk.Index)"
                     Label = "(Unformatted)"
@@ -4512,6 +4754,29 @@ function Get-RemovableDrives {
                     DiskNumber = $disk.Index
                     Model = $disk.Model
                     DisplayName = "Disk $($disk.Index) - $($disk.Model) ($sizeGB GB) [RAW]"
+                }
+            }
+        }
+        
+        # Method 2: Fallback - Also check logical drives directly for removable drives we might have missed
+        if ($drives.Count -eq 0) {
+            $logicalDrives = Get-CimInstance -ClassName Win32_LogicalDisk -ErrorAction SilentlyContinue | 
+                Where-Object { $_.DriveType -eq 2 } # DriveType 2 = Removable
+            foreach ($ld in $logicalDrives) {
+                $sizeGB = if ($ld.Size) { [math]::Round($ld.Size / 1GB, 2) } else { 0 }
+                $freeGB = if ($ld.FreeSpace) { [math]::Round($ld.FreeSpace / 1GB, 2) } else { 0 }
+                # Check if we already have this drive
+                if (-not ($drives | Where-Object { $_.DriveLetter -eq $ld.DeviceID })) {
+                    $drives += [PSCustomObject]@{
+                        DriveLetter = $ld.DeviceID
+                        Label = $ld.VolumeName
+                        FileSystem = $ld.FileSystem
+                        SizeGB = $sizeGB
+                        FreeGB = $freeGB
+                        DiskNumber = -1  # Unknown disk number
+                        Model = "Removable Drive"
+                        DisplayName = "$($ld.DeviceID) - $($ld.VolumeName) ($sizeGB GB)"
+                    }
                 }
             }
         }

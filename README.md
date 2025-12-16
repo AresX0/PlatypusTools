@@ -9,15 +9,21 @@ A comprehensive Windows system utility combining file management, media conversi
 ## ✨ Features
 
 ### 📁 File Cleaner
-- Scan and clean folders based on file types and patterns
+- Scan and rename files with powerful batch options
+- **Prefix Management** - Detect, add, change, or remove filename prefixes
+- **Season/Episode Tagging** - Add S##E## tags for TV series organization
+- **Renumber Alphabetically** - Sort files by core name and renumber episodes sequentially
+- **Smart Sorting** - Ignores prefix, season, episode when sorting alphabetically
 - Filter by extension, age, and size
 - Recursive directory scanning
-- Safe deletion with confirmation
+- Dry-run mode for safe previewing
 
 ### 🎬 Media Conversion
 - **Video Combiner** - Merge multiple videos into one (requires FFmpeg)
-- **Graphics Conversion** - Convert images between formats (JPG, PNG, BMP, GIF, TIFF, WebP)
+- **Graphics Conversion** - Convert images between formats (JPG, PNG, BMP, GIF, TIFF, WebP, ICO)
 - **Image Resize** - Resize images by dimensions or percentage
+- **Bootable USB Creator** - Create bootable USB drives from ISO files (Windows installation media)
+- **.NET Fallbacks** - Image conversion works even without FFmpeg using native .NET libraries
 
 ### 🔍 Duplicate Finder
 - Find duplicate files using MD5/SHA256 hash comparison
@@ -39,12 +45,13 @@ A comprehensive Windows system utility combining file management, media conversi
 - View and edit file metadata (EXIF, IPTC, XMP)
 - Support for images, video, audio, and documents
 - Export metadata to CSV (requires ExifTool)
+- **.NET Fallbacks** - View metadata using Windows Shell when ExifTool unavailable
 
 ## 📋 Requirements
 
 - **Windows 10/11** (64-bit recommended)
 - **PowerShell 5.1** or later
-- **Administrator privileges** (for some features)
+- **Administrator privileges** (for some features like Bootable USB, Startup Manager)
 
 ### Optional Dependencies
 
