@@ -37,6 +37,277 @@ if ($runningAsScript -and -not $isAdmin) {
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing -ErrorAction SilentlyContinue
+
+# ==================== .NET FALLBACK UTILITIES ====================
+# These provide basic functionality when FFmpeg/ExifTool are not available
+
+# Global flag to track tool availability
+$script:HasFFmpeg = $false
+$script:HasExifTool = $false
+
+# .NET Image Format Mapping
+$script:ImageFormatMap = @{
+    '.jpg'  = [System.Drawing.Imaging.ImageFormat]::Jpeg
+    '.jpeg' = [System.Drawing.Imaging.ImageFormat]::Jpeg
+    '.png'  = [System.Drawing.Imaging.ImageFormat]::Png
+    '.bmp'  = [System.Drawing.Imaging.ImageFormat]::Bmp
+    '.gif'  = [System.Drawing.Imaging.ImageFormat]::Gif
+    '.tiff' = [System.Drawing.Imaging.ImageFormat]::Tiff
+    '.tif'  = [System.Drawing.Imaging.ImageFormat]::Tiff
+}
+
+function Convert-ImageNative {
+    <#
+    .SYNOPSIS
+    Convert image to another format using .NET (no FFmpeg required)
+    #>
+    param(
+        [string]$SourcePath,
+        [string]$DestPath,
+        [int]$Quality = 90,
+        [int]$Width = 0,
+        [int]$Height = 0,
+        [switch]$KeepAspectRatio
+    )
+    try {
+        $srcImg = [System.Drawing.Image]::FromFile($SourcePath)
+        $destExt = [System.IO.Path]::GetExtension($DestPath).ToLower()
+        
+        # Calculate dimensions if resize requested
+        $newW = $srcImg.Width; $newH = $srcImg.Height
+        if ($Width -gt 0 -or $Height -gt 0) {
+            if ($KeepAspectRatio -and $Width -gt 0 -and $Height -gt 0) {
+                $ratioW = $Width / $srcImg.Width; $ratioH = $Height / $srcImg.Height
+                $ratio = [Math]::Min($ratioW, $ratioH)
+                $newW = [int]($srcImg.Width * $ratio); $newH = [int]($srcImg.Height * $ratio)
+            } elseif ($Width -gt 0 -and $Height -gt 0) {
+                $newW = $Width; $newH = $Height
+            } elseif ($Width -gt 0) {
+                $ratio = $Width / $srcImg.Width
+                $newW = $Width; $newH = [int]($srcImg.Height * $ratio)
+            } elseif ($Height -gt 0) {
+                $ratio = $Height / $srcImg.Height
+                $newH = $Height; $newW = [int]($srcImg.Width * $ratio)
+            }
+        }
+        
+        # Create destination bitmap
+        $destBmp = New-Object System.Drawing.Bitmap($newW, $newH)
+        $g = [System.Drawing.Graphics]::FromImage($destBmp)
+        $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+        $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+        $g.DrawImage($srcImg, 0, 0, $newW, $newH)
+        $g.Dispose()
+        $srcImg.Dispose()
+        
+        # Save with appropriate format
+        if ($destExt -in @('.jpg', '.jpeg')) {
+            $encoder = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | 
+                Where-Object { $_.MimeType -eq 'image/jpeg' } | Select-Object -First 1
+            $encParams = New-Object System.Drawing.Imaging.EncoderParameters(1)
+            $encParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter(
+                [System.Drawing.Imaging.Encoder]::Quality, [long]$Quality)
+            $destBmp.Save($DestPath, $encoder, $encParams)
+        } elseif ($script:ImageFormatMap.ContainsKey($destExt)) {
+            $destBmp.Save($DestPath, $script:ImageFormatMap[$destExt])
+        } else {
+            $destBmp.Save($DestPath)
+        }
+        $destBmp.Dispose()
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Get-ImageInfoNative {
+    <#
+    .SYNOPSIS
+    Get image information using .NET (no ExifTool required)
+    #>
+    param([string]$Path)
+    $result = @{
+        Width = 0; Height = 0; Format = ""; BitsPerPixel = 0
+        HorizontalResolution = 0; VerticalResolution = 0
+        HasAlpha = $false; FrameCount = 1
+    }
+    try {
+        $img = [System.Drawing.Image]::FromFile($Path)
+        $result.Width = $img.Width
+        $result.Height = $img.Height
+        $result.Format = $img.RawFormat.ToString()
+        $result.BitsPerPixel = [System.Drawing.Image]::GetPixelFormatSize($img.PixelFormat)
+        $result.HorizontalResolution = $img.HorizontalResolution
+        $result.VerticalResolution = $img.VerticalResolution
+        $result.HasAlpha = [System.Drawing.Image]::IsAlphaPixelFormat($img.PixelFormat)
+        $result.FrameCount = $img.GetFrameCount([System.Drawing.Imaging.FrameDimension]::Page)
+        $img.Dispose()
+    } catch {}
+    return $result
+}
+
+function Get-ImageExifNative {
+    <#
+    .SYNOPSIS
+    Get EXIF metadata from images using .NET PropertyItems (no ExifTool required)
+    #>
+    param([string]$Path)
+    $exifTags = @{
+        0x010F = "Make"
+        0x0110 = "Model"
+        0x0112 = "Orientation"
+        0x011A = "XResolution"
+        0x011B = "YResolution"
+        0x0128 = "ResolutionUnit"
+        0x0131 = "Software"
+        0x0132 = "DateTime"
+        0x013B = "Artist"
+        0x8298 = "Copyright"
+        0x9000 = "ExifVersion"
+        0x9003 = "DateTimeOriginal"
+        0x9004 = "DateTimeDigitized"
+        0x920A = "FocalLength"
+        0xA001 = "ColorSpace"
+        0xA002 = "PixelXDimension"
+        0xA003 = "PixelYDimension"
+        0x829A = "ExposureTime"
+        0x829D = "FNumber"
+        0x8827 = "ISOSpeedRatings"
+        0x9207 = "MeteringMode"
+        0x9209 = "Flash"
+        0x010E = "ImageDescription"
+        0x9C9B = "XPTitle"
+        0x9C9C = "XPComment"
+        0x9C9D = "XPAuthor"
+        0x9C9E = "XPKeywords"
+        0x9C9F = "XPSubject"
+    }
+    $metadata = @()
+    try {
+        $img = [System.Drawing.Image]::FromFile($Path)
+        foreach ($prop in $img.PropertyItems) {
+            $tagName = if ($exifTags.ContainsKey($prop.Id)) { $exifTags[$prop.Id] } else { "Tag_$($prop.Id)" }
+            $value = ""
+            switch ($prop.Type) {
+                1 { $value = [BitConverter]::ToString($prop.Value) } # Byte
+                2 { $value = [System.Text.Encoding]::ASCII.GetString($prop.Value).TrimEnd([char]0) } # ASCII
+                3 { if ($prop.Value.Length -ge 2) { $value = [BitConverter]::ToUInt16($prop.Value, 0) } } # Short
+                4 { if ($prop.Value.Length -ge 4) { $value = [BitConverter]::ToUInt32($prop.Value, 0) } } # Long
+                5 { # Rational
+                    if ($prop.Value.Length -ge 8) {
+                        $num = [BitConverter]::ToUInt32($prop.Value, 0)
+                        $den = [BitConverter]::ToUInt32($prop.Value, 4)
+                        $value = if ($den -ne 0) { "$num/$den" } else { $num }
+                    }
+                }
+                7 { $value = [BitConverter]::ToString($prop.Value) } # Undefined
+            }
+            $metadata += [PSCustomObject]@{ Tag = $tagName; Value = $value }
+        }
+        $img.Dispose()
+    } catch {}
+    return $metadata
+}
+
+function Get-FileMetadataShell {
+    <#
+    .SYNOPSIS
+    Get file metadata using Windows Shell (works for any file type, no external tools)
+    #>
+    param([string]$Path)
+    $metadata = @()
+    try {
+        $shell = New-Object -ComObject Shell.Application
+        $folder = $shell.NameSpace((Split-Path $Path -Parent))
+        $file = $folder.ParseName((Split-Path $Path -Leaf))
+        # Get extended properties (0-350 covers most metadata)
+        for ($i = 0; $i -lt 350; $i++) {
+            $propName = $folder.GetDetailsOf($null, $i)
+            $propValue = $folder.GetDetailsOf($file, $i)
+            if ($propName -and $propValue) {
+                $metadata += [PSCustomObject]@{ Tag = $propName; Value = $propValue }
+            }
+        }
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+    } catch {}
+    return $metadata
+}
+
+function Get-VideoInfoShell {
+    <#
+    .SYNOPSIS
+    Get video information using Windows Shell (no FFprobe required)
+    #>
+    param([string]$Path)
+    $info = @{
+        Duration = ""; Width = 0; Height = 0; FrameRate = ""
+        BitRate = ""; AudioChannels = ""; AudioSampleRate = ""
+        VideoCodec = ""; AudioCodec = ""
+    }
+    try {
+        $shell = New-Object -ComObject Shell.Application
+        $folder = $shell.NameSpace((Split-Path $Path -Parent))
+        $file = $folder.ParseName((Split-Path $Path -Leaf))
+        # Common property indices for media files
+        $propMap = @{
+            27 = "Duration"      # Length
+            316 = "Width"        # Frame width
+            317 = "Height"       # Frame height  
+            318 = "FrameRate"    # Frame rate
+            320 = "BitRate"      # Total bitrate
+        }
+        foreach ($idx in $propMap.Keys) {
+            $val = $folder.GetDetailsOf($file, $idx)
+            if ($val) { $info[$propMap[$idx]] = $val }
+        }
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+    } catch {}
+    return $info
+}
+
+function Get-AudioInfoShell {
+    <#
+    .SYNOPSIS
+    Get audio information using Windows Shell (no FFprobe required)
+    #>
+    param([string]$Path)
+    $info = @{
+        Duration = ""; BitRate = ""; SampleRate = ""; Channels = ""
+        Title = ""; Artist = ""; Album = ""; Year = ""; Genre = ""
+        TrackNumber = ""; Comment = ""
+    }
+    try {
+        $shell = New-Object -ComObject Shell.Application
+        $folder = $shell.NameSpace((Split-Path $Path -Parent))
+        $file = $folder.ParseName((Split-Path $Path -Leaf))
+        # Common property indices for audio
+        $propMap = @{
+            21 = "Title"; 20 = "Artist"; 14 = "Album"; 15 = "Year"
+            16 = "Genre"; 26 = "TrackNumber"; 27 = "Duration"; 28 = "BitRate"
+            24 = "Comment"
+        }
+        foreach ($idx in $propMap.Keys) {
+            $val = $folder.GetDetailsOf($file, $idx)
+            if ($val) { $info[$propMap[$idx]] = $val }
+        }
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+    } catch {}
+    return $info
+}
+
+function Test-ToolsAvailable {
+    <#
+    .SYNOPSIS
+    Check which external tools are available and set global flags
+    #>
+    $script:HasFFmpeg = ($script:ffmpegPath -and (Test-Path -LiteralPath $script:ffmpegPath -ErrorAction SilentlyContinue))
+    $script:HasExifTool = ($script:exiftoolPath -and (Test-Path -LiteralPath $script:exiftoolPath -ErrorAction SilentlyContinue))
+    return @{ FFmpeg = $script:HasFFmpeg; ExifTool = $script:HasExifTool }
+}
+
+# ==================== END FALLBACK UTILITIES ====================
 
 function Ensure-Directory($path) {
     if (-not $path) { return }
@@ -1538,8 +1809,18 @@ $script:DupJsonDir   = $storage.Root
 
               <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,0,0,8">
                 <Button Name="BtnImgConvert" Content="Convert to ICO" Width="140"/>
+                <TextBlock Text="  or  " VerticalAlignment="Center"/>
+                <TextBlock Text="Format:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                <ComboBox Name="CmbImgOutFormat" Width="80">
+                  <ComboBoxItem Content="PNG" Tag="png" IsSelected="True"/>
+                  <ComboBoxItem Content="JPG" Tag="jpg"/>
+                  <ComboBoxItem Content="BMP" Tag="bmp"/>
+                  <ComboBoxItem Content="GIF" Tag="gif"/>
+                  <ComboBoxItem Content="TIFF" Tag="tiff"/>
+                </ComboBox>
+                <Button Name="BtnImgConvertFormat" Content="Convert Format" Width="120" Margin="4,0,0,0"/>
                 <TextBlock Name="TxtImgStatus" Text="Ready." VerticalAlignment="Center" Margin="8,0,8,0"/>
-                <ProgressBar Name="ImgProgress" Height="16" Width="220" Minimum="0" Maximum="100" Visibility="Collapsed"/>
+                <ProgressBar Name="ImgProgress" Height="16" Width="180" Minimum="0" Maximum="100" Visibility="Collapsed"/>
               </StackPanel>
 
               <TextBox Name="TxtImgLog" Grid.Row="4" Margin="0" IsReadOnly="True" TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="12"/>
@@ -2259,6 +2540,8 @@ $BtnIcoOutBrowse    = $window.FindName("BtnIcoOutBrowse")
 $CmbIcoSize         = $window.FindName("CmbIcoSize")
 $ChkIcoOverwrite    = $window.FindName("ChkIcoOverwrite")
 $BtnImgConvert      = $window.FindName("BtnImgConvert")
+$CmbImgOutFormat    = $window.FindName("CmbImgOutFormat")
+$BtnImgConvertFormat= $window.FindName("BtnImgConvertFormat")
 $TxtImgStatus       = $window.FindName("TxtImgStatus")
 $ImgProgress        = $window.FindName("ImgProgress")
 $TxtIcoName         = $window.FindName("TxtIcoName")
@@ -3095,18 +3378,37 @@ function Run-FFmpegLogged {
 }
 
 function Ensure-Tools {
+  <#
+  .SYNOPSIS
+  Check if FFmpeg/FFprobe are available. Shows warning if missing.
+  #>
   Ensure-LogDir
   if ($ToolDir -and -not (Test-Path -LiteralPath $ToolDir)) { New-Item -ItemType Directory -Path $ToolDir -Force | Out-Null }
   Refresh-ToolPaths
-  if (-not ($ffmpegPath -and (Test-Path -LiteralPath $ffmpegPath))) {
-    [System.Windows.MessageBox]::Show("ffmpeg.exe not found. Set the Tool Folder to a directory containing ffmpeg.exe.","Missing FFmpeg",[System.Windows.MessageBoxButton]::OK,[System.Windows.MessageBoxImage]::Warning) | Out-Null
+  $script:HasFFmpeg = ($ffmpegPath -and (Test-Path -LiteralPath $ffmpegPath))
+  $script:HasFFprobe = ($ffprobePath -and (Test-Path -LiteralPath $ffprobePath))
+  if (-not $script:HasFFmpeg) {
+    [System.Windows.MessageBox]::Show("ffmpeg.exe not found.`n`nVideo combining and conversion require FFmpeg.`nSet the Tool Folder to a directory containing ffmpeg.exe.`n`nImage operations (resize, ICO convert) work without FFmpeg.","Missing FFmpeg",[System.Windows.MessageBoxButton]::OK,[System.Windows.MessageBoxImage]::Warning) | Out-Null
     return $false
   }
-  if (-not ($ffprobePath -and (Test-Path -LiteralPath $ffprobePath))) {
-    [System.Windows.MessageBox]::Show("ffprobe.exe not found. Set the Tool Folder to a directory containing ffprobe.exe.","Missing FFprobe",[System.Windows.MessageBoxButton]::OK,[System.Windows.MessageBoxImage]::Warning) | Out-Null
+  if (-not $script:HasFFprobe) {
+    [System.Windows.MessageBox]::Show("ffprobe.exe not found.`n`nVideo info requires FFprobe (included with FFmpeg).`nSet the Tool Folder to a directory containing ffprobe.exe.","Missing FFprobe",[System.Windows.MessageBoxButton]::OK,[System.Windows.MessageBoxImage]::Warning) | Out-Null
     return $false
   }
   return $true
+}
+
+function Get-ToolStatus {
+  <#
+  .SYNOPSIS
+  Returns a summary of which tools are available without showing dialogs
+  #>
+  Refresh-ToolPaths
+  return @{
+    FFmpeg = ($ffmpegPath -and (Test-Path -LiteralPath $ffmpegPath -ErrorAction SilentlyContinue))
+    FFprobe = ($ffprobePath -and (Test-Path -LiteralPath $ffprobePath -ErrorAction SilentlyContinue))
+    ExifTool = ($exiftoolPath -and (Test-Path -LiteralPath $exiftoolPath -ErrorAction SilentlyContinue))
+  }
 }
 
 function Refresh-CombGrid { $DgCombine.ItemsSource = $null; $DgCombine.ItemsSource = $CombItems }
@@ -3888,6 +4190,63 @@ $BtnImgConvert.Add_Click({
   Set-ImgStatus $msg; Update-Status $msg
 })
 
+# Image Format Conversion (uses .NET - no FFmpeg required)
+if ($BtnImgConvertFormat) {
+  $BtnImgConvertFormat.Add_Click({
+    $selected = Get-ImgChecked
+    if ($selected.Count -eq 0 -and $ImgItems.Count -gt 0) { foreach ($i in $ImgItems) { $i.Apply = $true }; Refresh-ImgGrid; $selected = Get-ImgChecked }
+    if ($selected.Count -eq 0) { Update-Status "No images selected for conversion."; Set-ImgStatus "Select images to convert."; return }
+    $outDir = Get-IconOutputDir
+    if (-not $outDir) { [System.Windows.MessageBox]::Show("Set an output folder before converting."); return }
+    
+    # Get target format
+    $targetFmt = "png"
+    if ($CmbImgOutFormat -and $CmbImgOutFormat.SelectedItem -and $CmbImgOutFormat.SelectedItem.Tag) {
+      $targetFmt = $CmbImgOutFormat.SelectedItem.Tag.ToString().ToLower()
+    }
+    $overwrite = ($ChkIcoOverwrite -and $ChkIcoOverwrite.IsChecked)
+    
+    # Start log
+    $logFile = New-ImgLogFile -Prefix "imgfmt"
+    if ($TxtImgLog) { $TxtImgLog.Clear() }
+    Write-ImgLog "=== Image Format Conversion started $(Get-Date -Format s) ===" $logFile
+    Write-ImgLog "Output folder: $outDir" $logFile
+    Write-ImgLog "Target format: $targetFmt (using .NET - no FFmpeg required)" $logFile
+    Write-ImgLog "Overwrite: $overwrite" $logFile
+    Write-ImgLog "Files to convert: $($selected.Count)" $logFile
+    
+    Set-ImgStatus "Converting..."; Update-Status "Converting images to $targetFmt..."
+    Set-ImgProgress $true 0 $selected.Count
+    $success = 0; $skipped = 0; $fail = 0; $index = 0
+    
+    foreach ($img in $selected) {
+      $base = [System.IO.Path]::GetFileNameWithoutExtension($img.Path)
+      $dest = Join-Path $outDir ($base + "." + $targetFmt)
+      Write-ImgLog "[$($index+1)/$($selected.Count)] $($img.Name) -> $([System.IO.Path]::GetFileName($dest))" $logFile
+      
+      if (-not $overwrite -and (Test-Path -LiteralPath $dest)) {
+        Write-ImgLog "  SKIPPED (file exists)" $logFile
+        $skipped++; $index++; Set-ImgProgress $true $index $selected.Count; continue
+      }
+      
+      $ok = Convert-ImageNative -SourcePath $img.Path -DestPath $dest -Quality 90
+      if ($ok -and (Test-Path -LiteralPath $dest)) { 
+        $success++
+        Write-ImgLog "  SUCCESS" $logFile
+      } else { 
+        $fail++
+        Write-ImgLog "  FAILED" $logFile
+      }
+      $index++; Set-ImgProgress $true $index $selected.Count
+    }
+    
+    Set-ImgProgress $false
+    Write-ImgLog "=== Conversion complete: success=$success, skipped=$skipped, fail=$fail ===" $logFile
+    $msg = "$targetFmt convert: success $success, skipped $skipped, fail $fail"
+    Set-ImgStatus $msg; Update-Status $msg
+  })
+}
+
 # ==================== IMAGE RESIZE HANDLERS ====================
 $ResizeItems = New-Object System.Collections.ArrayList
 $supportedResizeExt = @('.jpg','.jpeg','.png','.bmp','.gif','.webp')
@@ -4370,17 +4729,20 @@ function Load-FileMetadata {
     if ($TxtMetaCreated) { $TxtMetaCreated.Text = $fi.CreationTime.ToString() }
     if ($TxtMetaModified) { $TxtMetaModified.Text = $fi.LastWriteTime.ToString() }
     
-    # Try to get dimensions for images
     $ext = $fi.Extension.ToLower()
-    if ($ext -in @('.jpg','.jpeg','.png','.gif','.bmp')) {
+    $isImage = $ext -in @('.jpg','.jpeg','.png','.gif','.bmp','.tiff','.tif')
+    $isVideo = $ext -in @('.mp4','.mkv','.avi','.mov','.wmv','.webm','.flv','.m4v')
+    $isAudio = $ext -in @('.mp3','.flac','.wav','.m4a','.aac','.ogg','.wma')
+    
+    # Try to get dimensions for images using .NET
+    if ($isImage) {
         try {
-            $img = [System.Drawing.Image]::FromFile($FilePath)
-            if ($TxtMetaDimensions) { $TxtMetaDimensions.Text = "$($img.Width) x $($img.Height)" }
-            $img.Dispose()
+            $imgInfo = Get-ImageInfoNative -Path $FilePath
+            if ($TxtMetaDimensions) { $TxtMetaDimensions.Text = "$($imgInfo.Width) x $($imgInfo.Height)" }
         } catch {}
     }
     
-    # Use exiftool if available
+    # Use exiftool if available (best metadata)
     if ($exiftoolPath -and (Test-Path $exiftoolPath)) {
         try {
             $output = & $exiftoolPath -s -s -s -json $FilePath 2>$null | ConvertFrom-Json
@@ -4397,9 +4759,10 @@ function Load-FileMetadata {
                     if ($prop.Name -eq "ImageSize" -and $TxtMetaDimensions) { $TxtMetaDimensions.Text = $prop.Value }
                 }
             }
+            if ($TxtMetaStatus) { $TxtMetaStatus.Text = "Loaded $($script:MetadataItems.Count) tags (ExifTool)." }
         } catch {}
-    } elseif ($ffprobePath -and (Test-Path $ffprobePath)) {
-        # Fallback to ffprobe for video
+    } elseif ($ffprobePath -and (Test-Path $ffprobePath) -and ($isVideo -or $isAudio)) {
+        # Fallback to ffprobe for video/audio
         try {
             $json = & $ffprobePath -v quiet -print_format json -show_format -show_streams $FilePath 2>$null | ConvertFrom-Json
             if ($json.format) {
@@ -4408,15 +4771,69 @@ function Load-FileMetadata {
                 if ($json.format.tags) {
                     foreach ($t in $json.format.tags.PSObject.Properties) {
                         [void]$script:MetadataItems.Add([PSCustomObject]@{ Tag=$t.Name; Value=$t.Value })
+                        if ($t.Name -eq "title" -and $TxtMetaTitle) { $TxtMetaTitle.Text = $t.Value }
+                        if ($t.Name -eq "artist" -and $TxtMetaArtist) { $TxtMetaArtist.Text = $t.Value }
+                        if ($t.Name -eq "album" -and $TxtMetaAlbum) { $TxtMetaAlbum.Text = $t.Value }
                     }
                 }
                 if ($TxtMetaDuration) { $TxtMetaDuration.Text = $json.format.duration }
             }
+            if ($TxtMetaStatus) { $TxtMetaStatus.Text = "Loaded $($script:MetadataItems.Count) tags (FFprobe)." }
         } catch {}
+    } else {
+        # FALLBACK: Use .NET and Windows Shell when no external tools available
+        if ($isImage) {
+            # Get EXIF from .NET PropertyItems
+            $exifData = Get-ImageExifNative -Path $FilePath
+            foreach ($item in $exifData) {
+                [void]$script:MetadataItems.Add($item)
+                if ($item.Tag -eq "Artist" -and $TxtMetaArtist) { $TxtMetaArtist.Text = $item.Value }
+                if ($item.Tag -eq "XPTitle" -and $TxtMetaTitle) { $TxtMetaTitle.Text = $item.Value }
+                if ($item.Tag -eq "XPComment" -and $TxtMetaComment) { $TxtMetaComment.Text = $item.Value }
+                if ($item.Tag -eq "DateTime" -and $TxtMetaModified) { $TxtMetaModified.Text = $item.Value }
+            }
+        }
+        if ($isVideo) {
+            # Get video info from Shell
+            $vidInfo = Get-VideoInfoShell -Path $FilePath
+            if ($vidInfo.Duration) { 
+                [void]$script:MetadataItems.Add([PSCustomObject]@{ Tag="Duration"; Value=$vidInfo.Duration })
+                if ($TxtMetaDuration) { $TxtMetaDuration.Text = $vidInfo.Duration }
+            }
+            if ($vidInfo.Width -and $vidInfo.Height) {
+                [void]$script:MetadataItems.Add([PSCustomObject]@{ Tag="Dimensions"; Value="$($vidInfo.Width) x $($vidInfo.Height)" })
+                if ($TxtMetaDimensions) { $TxtMetaDimensions.Text = "$($vidInfo.Width) x $($vidInfo.Height)" }
+            }
+            if ($vidInfo.FrameRate) { [void]$script:MetadataItems.Add([PSCustomObject]@{ Tag="FrameRate"; Value=$vidInfo.FrameRate }) }
+            if ($vidInfo.BitRate) { [void]$script:MetadataItems.Add([PSCustomObject]@{ Tag="BitRate"; Value=$vidInfo.BitRate }) }
+        }
+        if ($isAudio) {
+            # Get audio info from Shell
+            $audInfo = Get-AudioInfoShell -Path $FilePath
+            if ($audInfo.Duration) { 
+                [void]$script:MetadataItems.Add([PSCustomObject]@{ Tag="Duration"; Value=$audInfo.Duration })
+                if ($TxtMetaDuration) { $TxtMetaDuration.Text = $audInfo.Duration }
+            }
+            if ($audInfo.Title -and $TxtMetaTitle) { $TxtMetaTitle.Text = $audInfo.Title }
+            if ($audInfo.Artist -and $TxtMetaArtist) { $TxtMetaArtist.Text = $audInfo.Artist }
+            if ($audInfo.Album -and $TxtMetaAlbum) { $TxtMetaAlbum.Text = $audInfo.Album }
+            if ($audInfo.Year -and $TxtMetaYear) { $TxtMetaYear.Text = $audInfo.Year }
+            if ($audInfo.Comment -and $TxtMetaComment) { $TxtMetaComment.Text = $audInfo.Comment }
+            foreach ($k in $audInfo.Keys) { 
+                if ($audInfo[$k]) { [void]$script:MetadataItems.Add([PSCustomObject]@{ Tag=$k; Value=$audInfo[$k] }) }
+            }
+        }
+        # Also get Windows Shell properties for any file type
+        $shellMeta = Get-FileMetadataShell -Path $FilePath
+        foreach ($item in $shellMeta) {
+            # Avoid duplicates
+            $exists = $script:MetadataItems | Where-Object { $_.Tag -eq $item.Tag }
+            if (-not $exists) { [void]$script:MetadataItems.Add($item) }
+        }
+        if ($TxtMetaStatus) { $TxtMetaStatus.Text = "Loaded $($script:MetadataItems.Count) tags (Windows Shell - install ExifTool for more)." }
     }
     
     if ($DgMetadata) { $DgMetadata.ItemsSource = $null; $DgMetadata.ItemsSource = $script:MetadataItems }
-    if ($TxtMetaStatus) { $TxtMetaStatus.Text = "Loaded $($script:MetadataItems.Count) metadata tags." }
 }
 
 if ($BtnMetaBrowse) {
@@ -5518,6 +5935,17 @@ if ($MainStatusBar) { $MainStatusBar.Visibility = if ($script:AppConfig.ShowStat
 if ($HeaderBorder) { $HeaderBorder.Visibility = if ($script:AppConfig.ShowHeader) { "Visible" } else { "Collapsed" } }
 if ($MenuShowStatusBar) { $MenuShowStatusBar.IsChecked = $script:AppConfig.ShowStatusBar }
 if ($MenuShowToolbar) { $MenuShowToolbar.IsChecked = $script:AppConfig.ShowHeader }
+
+# Check tool availability and show status
+$toolStatus = Get-ToolStatus
+$statusParts = @()
+if ($toolStatus.FFmpeg) { $statusParts += "FFmpeg ✓" } else { $statusParts += "FFmpeg ✗" }
+if ($toolStatus.ExifTool) { $statusParts += "ExifTool ✓" } else { $statusParts += "ExifTool ✗" }
+$toolMsg = "Tools: " + ($statusParts -join " | ")
+if (-not $toolStatus.FFmpeg -or -not $toolStatus.ExifTool) {
+    $toolMsg += " (Some features limited - see File → Set Default Tools Folder)"
+}
+Update-Status $toolMsg
 
 # --- Show Combined UI ---
 $window.ShowDialog() | Out-Null
