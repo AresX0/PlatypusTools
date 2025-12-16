@@ -1890,6 +1890,74 @@ $script:DupJsonDir   = $storage.Root
               <TextBox Name="TxtResizeLog" Grid.Row="4" Margin="0" IsReadOnly="True" TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="12"/>
             </Grid>
           </TabItem>
+
+          <!-- Bootable USB Sub-tab -->
+          <TabItem Header="Bootable USB">
+            <Grid Margin="4">
+              <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+              </Grid.RowDefinitions>
+
+              <TextBlock Grid.Row="0" Text="Create bootable USB drives from ISO files (Windows, Linux, etc.)" Margin="0,0,0,12" FontWeight="SemiBold"/>
+
+              <!-- ISO Selection -->
+              <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
+                <TextBlock Text="ISO File:" VerticalAlignment="Center" Width="80"/>
+                <TextBox Name="TxtIsoPath" Width="400" Margin="0,0,8,0" IsReadOnly="True"/>
+                <Button Name="BtnIsoBrowse" Content="Browse..." Width="90"/>
+              </StackPanel>
+
+              <!-- USB Drive Selection -->
+              <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,8">
+                <TextBlock Text="USB Drive:" VerticalAlignment="Center" Width="80"/>
+                <ComboBox Name="CmbUsbDrive" Width="300" Margin="0,0,8,0"/>
+                <Button Name="BtnUsbRefresh" Content="Refresh" Width="80" Margin="0,0,8,0"/>
+                <TextBlock Name="TxtUsbInfo" Text="" VerticalAlignment="Center" Foreground="Gray"/>
+              </StackPanel>
+
+              <!-- Options -->
+              <GroupBox Grid.Row="3" Header="Options" Margin="0,0,0,8" Padding="8">
+                <StackPanel>
+                  <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                    <TextBlock Text="File System:" VerticalAlignment="Center" Width="100"/>
+                    <ComboBox Name="CmbUsbFileSystem" Width="120">
+                      <ComboBoxItem Content="FAT32 (UEFI)" Tag="FAT32" IsSelected="True"/>
+                      <ComboBoxItem Content="NTFS (Legacy/Large)" Tag="NTFS"/>
+                      <ComboBoxItem Content="exFAT" Tag="exFAT"/>
+                    </ComboBox>
+                    <TextBlock Text="  Volume Label:" VerticalAlignment="Center" Margin="16,0,6,0"/>
+                    <TextBox Name="TxtUsbLabel" Width="120" Text="BOOTUSB"/>
+                  </StackPanel>
+                  <StackPanel Orientation="Horizontal">
+                    <CheckBox Name="ChkUsbQuickFormat" Content="Quick Format" IsChecked="True" Margin="0,0,16,0"/>
+                    <CheckBox Name="ChkUsbVerify" Content="Verify after write" Margin="0,0,16,0"/>
+                    <TextBlock Text="Boot Mode:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <ComboBox Name="CmbBootMode" Width="140">
+                      <ComboBoxItem Content="UEFI (GPT)" Tag="UEFI" IsSelected="True"/>
+                      <ComboBoxItem Content="Legacy BIOS (MBR)" Tag="MBR"/>
+                      <ComboBoxItem Content="UEFI + Legacy" Tag="BOTH"/>
+                    </ComboBox>
+                  </StackPanel>
+                </StackPanel>
+              </GroupBox>
+
+              <!-- Actions -->
+              <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="0,0,0,8">
+                <Button Name="BtnUsbWrite" Content="Create Bootable USB" Width="160" FontWeight="Bold"/>
+                <Button Name="BtnUsbCancel" Content="Cancel" Width="80" Margin="8,0,0,0" IsEnabled="False"/>
+                <TextBlock Name="TxtUsbStatus" Text="Ready. Select an ISO and USB drive." VerticalAlignment="Center" Margin="12,0,0,0"/>
+                <ProgressBar Name="UsbProgress" Height="18" Width="250" Minimum="0" Maximum="100" Visibility="Collapsed" Margin="12,0,0,0"/>
+              </StackPanel>
+
+              <!-- Log -->
+              <TextBox Name="TxtUsbLog" Grid.Row="5" Margin="0" IsReadOnly="True" TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="11" Background="#1E1E1E" Foreground="#DCDCDC"/>
+            </Grid>
+          </TabItem>
         </TabControl>
       </TabItem>
 
@@ -2641,6 +2709,23 @@ $ChkResizeKeepAspect= $window.FindName("ChkResizeKeepAspect")
 $TxtResizeStatus    = $window.FindName("TxtResizeStatus")
 $ResizeProgress     = $window.FindName("ResizeProgress")
 $TxtResizeLog       = $window.FindName("TxtResizeLog")
+
+# Controls - Bootable USB
+$TxtIsoPath         = $window.FindName("TxtIsoPath")
+$BtnIsoBrowse       = $window.FindName("BtnIsoBrowse")
+$CmbUsbDrive        = $window.FindName("CmbUsbDrive")
+$BtnUsbRefresh      = $window.FindName("BtnUsbRefresh")
+$TxtUsbInfo         = $window.FindName("TxtUsbInfo")
+$CmbUsbFileSystem   = $window.FindName("CmbUsbFileSystem")
+$TxtUsbLabel        = $window.FindName("TxtUsbLabel")
+$ChkUsbQuickFormat  = $window.FindName("ChkUsbQuickFormat")
+$ChkUsbVerify       = $window.FindName("ChkUsbVerify")
+$CmbBootMode        = $window.FindName("CmbBootMode")
+$BtnUsbWrite        = $window.FindName("BtnUsbWrite")
+$BtnUsbCancel       = $window.FindName("BtnUsbCancel")
+$TxtUsbStatus       = $window.FindName("TxtUsbStatus")
+$UsbProgress        = $window.FindName("UsbProgress")
+$TxtUsbLog          = $window.FindName("TxtUsbLog")
 
 # Controls - Hash Calculator
 $BtnHashFile   = $window.FindName("BtnHashFile")
@@ -4359,6 +4444,419 @@ if ($BtnResizeRun) {
     })
 }
 
+# ==================== BOOTABLE USB HANDLERS ====================
+$script:UsbCancelRequested = $false
+$script:SelectedIsoPath = $null
+
+function Write-UsbLog {
+    param([string]$Message, [string]$Color = "White")
+    if ($TxtUsbLog) {
+        $timestamp = Get-Date -Format "HH:mm:ss"
+        $TxtUsbLog.AppendText("[$timestamp] $Message`r`n")
+        $TxtUsbLog.ScrollToEnd()
+    }
+    [System.Windows.Forms.Application]::DoEvents()
+}
+
+function Set-UsbStatus {
+    param([string]$Text)
+    if ($TxtUsbStatus) { $TxtUsbStatus.Text = $Text }
+    [System.Windows.Forms.Application]::DoEvents()
+}
+
+function Set-UsbProgress {
+    param([int]$Value, [bool]$Visible = $true)
+    if ($UsbProgress) {
+        $UsbProgress.Value = [Math]::Min(100, [Math]::Max(0, $Value))
+        $UsbProgress.Visibility = if ($Visible) { "Visible" } else { "Collapsed" }
+    }
+    [System.Windows.Forms.Application]::DoEvents()
+}
+
+function Get-RemovableDrives {
+    <#
+    .SYNOPSIS
+    Get list of removable USB drives
+    #>
+    $drives = @()
+    try {
+        $diskDrives = Get-CimInstance -ClassName Win32_DiskDrive | Where-Object { $_.MediaType -match "Removable" -or $_.InterfaceType -eq "USB" }
+        foreach ($disk in $diskDrives) {
+            $partitions = Get-CimInstance -Query "ASSOCIATORS OF {Win32_DiskDrive.DeviceID='$($disk.DeviceID.Replace('\','\\'))'} WHERE AssocClass=Win32_DiskDriveToDiskPartition"
+            foreach ($partition in $partitions) {
+                $logicalDisks = Get-CimInstance -Query "ASSOCIATORS OF {Win32_DiskPartition.DeviceID='$($partition.DeviceID)'} WHERE AssocClass=Win32_LogicalDiskToPartition"
+                foreach ($logical in $logicalDisks) {
+                    $sizeGB = [math]::Round($disk.Size / 1GB, 2)
+                    $freeGB = [math]::Round($logical.FreeSpace / 1GB, 2)
+                    $drives += [PSCustomObject]@{
+                        DriveLetter = $logical.DeviceID
+                        Label = $logical.VolumeName
+                        FileSystem = $logical.FileSystem
+                        SizeGB = $sizeGB
+                        FreeGB = $freeGB
+                        DiskNumber = $disk.Index
+                        Model = $disk.Model
+                        DisplayName = "$($logical.DeviceID) - $($disk.Model) ($sizeGB GB)"
+                    }
+                }
+            }
+            # Handle disks without partitions
+            if (-not $partitions) {
+                $sizeGB = [math]::Round($disk.Size / 1GB, 2)
+                $drives += [PSCustomObject]@{
+                    DriveLetter = "Disk $($disk.Index)"
+                    Label = "(Unformatted)"
+                    FileSystem = "RAW"
+                    SizeGB = $sizeGB
+                    FreeGB = 0
+                    DiskNumber = $disk.Index
+                    Model = $disk.Model
+                    DisplayName = "Disk $($disk.Index) - $($disk.Model) ($sizeGB GB) [RAW]"
+                }
+            }
+        }
+    } catch {
+        Write-UsbLog "Error detecting drives: $($_.Exception.Message)"
+    }
+    return $drives
+}
+
+function Refresh-UsbDriveList {
+    if (-not $CmbUsbDrive) { return }
+    $CmbUsbDrive.Items.Clear()
+    $drives = Get-RemovableDrives
+    $script:UsbDriveList = $drives
+    foreach ($d in $drives) {
+        $item = New-Object System.Windows.Controls.ComboBoxItem
+        $item.Content = $d.DisplayName
+        $item.Tag = $d
+        $CmbUsbDrive.Items.Add($item) | Out-Null
+    }
+    if ($drives.Count -gt 0) {
+        $CmbUsbDrive.SelectedIndex = 0
+        Set-UsbStatus "Found $($drives.Count) removable drive(s)."
+    } else {
+        Set-UsbStatus "No removable USB drives found. Insert a USB drive and click Refresh."
+    }
+}
+
+function Get-SelectedUsbDrive {
+    if ($CmbUsbDrive -and $CmbUsbDrive.SelectedItem -and $CmbUsbDrive.SelectedItem.Tag) {
+        return $CmbUsbDrive.SelectedItem.Tag
+    }
+    return $null
+}
+
+function Format-UsbDrive {
+    param(
+        [int]$DiskNumber,
+        [string]$FileSystem,
+        [string]$Label,
+        [string]$PartitionStyle,  # GPT or MBR
+        [switch]$QuickFormat
+    )
+    
+    Write-UsbLog "Formatting Disk $DiskNumber as $FileSystem ($PartitionStyle)..."
+    Set-UsbProgress 10
+    
+    try {
+        # Create diskpart script
+        $diskpartScript = @"
+
+select disk $DiskNumber
+clean
+convert $PartitionStyle
+create partition primary
+select partition 1
+active
+format fs=$FileSystem label="$Label" $(if($QuickFormat){'quick'})
+assign
+"@
+        $scriptPath = Join-Path $env:TEMP "diskpart_usb.txt"
+        $diskpartScript | Set-Content -Path $scriptPath -Encoding ASCII
+        
+        Write-UsbLog "Running diskpart..."
+        $result = & diskpart /s $scriptPath 2>&1
+        $result | ForEach-Object { Write-UsbLog "  $_" }
+        
+        Remove-Item $scriptPath -Force -ErrorAction SilentlyContinue
+        
+        Set-UsbProgress 30
+        Write-UsbLog "Format complete."
+        return $true
+    } catch {
+        Write-UsbLog "Format failed: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Copy-IsoToUsb {
+    param(
+        [string]$IsoPath,
+        [string]$DestDrive,
+        [string]$BootMode
+    )
+    
+    Write-UsbLog "Mounting ISO: $IsoPath"
+    Set-UsbProgress 35
+    
+    try {
+        # Mount the ISO
+        $mountResult = Mount-DiskImage -ImagePath $IsoPath -PassThru
+        $isoVolume = $mountResult | Get-Volume
+        $isoDrive = ($isoVolume.DriveLetter + ":\")
+        
+        Write-UsbLog "ISO mounted at $isoDrive"
+        Set-UsbProgress 40
+        
+        # Get total size for progress
+        $sourceFiles = Get-ChildItem -Path $isoDrive -Recurse -File -ErrorAction SilentlyContinue
+        $totalFiles = $sourceFiles.Count
+        $totalSize = ($sourceFiles | Measure-Object -Property Length -Sum).Sum
+        Write-UsbLog "Copying $totalFiles files ($([math]::Round($totalSize/1MB, 1)) MB)..."
+        
+        # Copy all files
+        $copiedFiles = 0
+        $copiedSize = 0
+        
+        # Use robocopy for efficient copying
+        $robocopyArgs = @($isoDrive, $DestDrive, "/E", "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS", "/NP")
+        Write-UsbLog "Running: robocopy $($robocopyArgs -join ' ')"
+        
+        $robocopyOutput = & robocopy @robocopyArgs 2>&1
+        $robocopyExit = $LASTEXITCODE
+        
+        # Robocopy exit codes: 0-7 are success, 8+ are errors
+        if ($robocopyExit -lt 8) {
+            Write-UsbLog "File copy completed successfully (robocopy exit: $robocopyExit)"
+        } else {
+            Write-UsbLog "Robocopy reported issues (exit: $robocopyExit)"
+            $robocopyOutput | ForEach-Object { Write-UsbLog "  $_" }
+        }
+        
+        Set-UsbProgress 85
+        
+        # For UEFI boot, check if EFI folder exists
+        if ($BootMode -in @("UEFI", "BOTH")) {
+            $efiPath = Join-Path $DestDrive "EFI"
+            if (Test-Path $efiPath) {
+                Write-UsbLog "EFI boot files found - USB should be UEFI bootable."
+            } else {
+                Write-UsbLog "Warning: No EFI folder found. UEFI boot may not work."
+            }
+        }
+        
+        # For Legacy/MBR boot, try to set up boot sector
+        if ($BootMode -in @("MBR", "BOTH")) {
+            Write-UsbLog "Setting up legacy boot sector..."
+            $bootsectPath = Join-Path $isoDrive "boot\bootsect.exe"
+            if (Test-Path $bootsectPath) {
+                $bootResult = & $bootsectPath /nt60 $DestDrive /mbr 2>&1
+                Write-UsbLog "Bootsect result: $bootResult"
+            } else {
+                # Try system bootsect
+                $sysBootsect = "$env:SystemRoot\System32\bootsect.exe"
+                if (Test-Path $sysBootsect) {
+                    $bootResult = & $sysBootsect /nt60 $DestDrive /mbr 2>&1
+                    Write-UsbLog "System bootsect result: $bootResult"
+                } else {
+                    Write-UsbLog "Warning: bootsect.exe not found. Legacy boot may not work."
+                }
+            }
+        }
+        
+        Set-UsbProgress 95
+        
+        # Unmount ISO
+        Write-UsbLog "Unmounting ISO..."
+        Dismount-DiskImage -ImagePath $IsoPath | Out-Null
+        
+        Set-UsbProgress 100
+        Write-UsbLog "ISO contents copied to USB successfully!"
+        return $true
+        
+    } catch {
+        Write-UsbLog "Error: $($_.Exception.Message)"
+        # Try to unmount ISO on error
+        try { Dismount-DiskImage -ImagePath $IsoPath -ErrorAction SilentlyContinue | Out-Null } catch {}
+        return $false
+    }
+}
+
+# Event: Browse ISO
+if ($BtnIsoBrowse) {
+    $BtnIsoBrowse.Add_Click({
+        $dlg = New-Object System.Windows.Forms.OpenFileDialog
+        $dlg.Filter = "ISO files (*.iso)|*.iso|All files (*.*)|*.*"
+        $dlg.Title = "Select ISO file"
+        if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $script:SelectedIsoPath = $dlg.FileName
+            $TxtIsoPath.Text = $dlg.FileName
+            $isoSize = [math]::Round((Get-Item $dlg.FileName).Length / 1GB, 2)
+            Write-UsbLog "Selected ISO: $($dlg.FileName) ($isoSize GB)"
+            Set-UsbStatus "ISO selected: $isoSize GB"
+        }
+    })
+}
+
+# Event: Refresh USB drives
+if ($BtnUsbRefresh) {
+    $BtnUsbRefresh.Add_Click({ Refresh-UsbDriveList })
+}
+
+# Event: USB drive selection changed
+if ($CmbUsbDrive) {
+    $CmbUsbDrive.Add_SelectionChanged({
+        $drive = Get-SelectedUsbDrive
+        if ($drive -and $TxtUsbInfo) {
+            $TxtUsbInfo.Text = "$($drive.FileSystem) | $($drive.FreeGB)/$($drive.SizeGB) GB free"
+        }
+    })
+}
+
+# Event: Create Bootable USB
+if ($BtnUsbWrite) {
+    $BtnUsbWrite.Add_Click({
+        # Validate inputs
+        if (-not $script:SelectedIsoPath -or -not (Test-Path $script:SelectedIsoPath)) {
+            [System.Windows.MessageBox]::Show("Please select a valid ISO file.", "No ISO Selected", "OK", "Warning")
+            return
+        }
+        
+        $drive = Get-SelectedUsbDrive
+        if (-not $drive) {
+            [System.Windows.MessageBox]::Show("Please select a USB drive.", "No Drive Selected", "OK", "Warning")
+            return
+        }
+        
+        # Check ISO size vs drive size
+        $isoSizeGB = [math]::Round((Get-Item $script:SelectedIsoPath).Length / 1GB, 2)
+        if ($isoSizeGB -gt $drive.SizeGB) {
+            [System.Windows.MessageBox]::Show("The ISO file ($isoSizeGB GB) is larger than the USB drive ($($drive.SizeGB) GB).", "Drive Too Small", "OK", "Error")
+            return
+        }
+        
+        # Warning about data loss
+        $confirm = [System.Windows.MessageBox]::Show(
+            "WARNING: All data on $($drive.DriveLetter) ($($drive.Model)) will be ERASED!`n`nDo you want to continue?",
+            "Confirm Format",
+            "YesNo",
+            "Warning"
+        )
+        
+        if ($confirm -ne "Yes") {
+            Set-UsbStatus "Operation cancelled."
+            return
+        }
+        
+        # Get options
+        $fileSystem = if ($CmbUsbFileSystem.SelectedItem.Tag) { $CmbUsbFileSystem.SelectedItem.Tag } else { "FAT32" }
+        $bootMode = if ($CmbBootMode.SelectedItem.Tag) { $CmbBootMode.SelectedItem.Tag } else { "UEFI" }
+        $partStyle = if ($bootMode -eq "MBR") { "MBR" } else { "GPT" }
+        $label = if ($TxtUsbLabel.Text) { $TxtUsbLabel.Text.Substring(0, [Math]::Min(11, $TxtUsbLabel.Text.Length)) } else { "BOOTUSB" }
+        $quickFormat = if ($ChkUsbQuickFormat) { $ChkUsbQuickFormat.IsChecked } else { $true }
+        
+        # Check FAT32 limit
+        if ($fileSystem -eq "FAT32" -and $isoSizeGB -gt 4) {
+            $switchToNtfs = [System.Windows.MessageBox]::Show(
+                "ISO is larger than 4GB. FAT32 cannot hold files larger than 4GB.`n`nSwitch to NTFS? (Note: NTFS may not work for UEFI boot on some systems)",
+                "FAT32 Limitation",
+                "YesNo",
+                "Question"
+            )
+            if ($switchToNtfs -eq "Yes") {
+                $fileSystem = "NTFS"
+            } else {
+                Set-UsbStatus "Operation cancelled due to FAT32 size limit."
+                return
+            }
+        }
+        
+        # Disable buttons during operation
+        $BtnUsbWrite.IsEnabled = $false
+        $BtnUsbCancel.IsEnabled = $true
+        $script:UsbCancelRequested = $false
+        
+        if ($TxtUsbLog) { $TxtUsbLog.Clear() }
+        Write-UsbLog "=========================================="
+        Write-UsbLog "Creating Bootable USB"
+        Write-UsbLog "=========================================="
+        Write-UsbLog "ISO: $($script:SelectedIsoPath)"
+        Write-UsbLog "Drive: $($drive.DisplayName)"
+        Write-UsbLog "File System: $fileSystem"
+        Write-UsbLog "Partition Style: $partStyle"
+        Write-UsbLog "Boot Mode: $bootMode"
+        Write-UsbLog "=========================================="
+        
+        Set-UsbProgress 5 $true
+        
+        try {
+            # Step 1: Format the drive
+            $formatOk = Format-UsbDrive -DiskNumber $drive.DiskNumber -FileSystem $fileSystem -Label $label -PartitionStyle $partStyle -QuickFormat:$quickFormat
+            
+            if (-not $formatOk) {
+                throw "Format failed"
+            }
+            
+            if ($script:UsbCancelRequested) {
+                Write-UsbLog "Operation cancelled by user."
+                Set-UsbStatus "Cancelled."
+                return
+            }
+            
+            # Refresh drive list to get new drive letter
+            Start-Sleep -Seconds 2
+            Refresh-UsbDriveList
+            $drive = Get-SelectedUsbDrive
+            
+            if (-not $drive -or $drive.DriveLetter -match "Disk") {
+                # Try to find the newly formatted drive
+                Start-Sleep -Seconds 3
+                Refresh-UsbDriveList
+                $drive = Get-SelectedUsbDrive
+            }
+            
+            $destDrive = $drive.DriveLetter + "\"
+            Write-UsbLog "Destination drive: $destDrive"
+            
+            # Step 2: Copy ISO contents
+            $copyOk = Copy-IsoToUsb -IsoPath $script:SelectedIsoPath -DestDrive $destDrive -BootMode $bootMode
+            
+            if ($copyOk) {
+                Write-UsbLog "=========================================="
+                Write-UsbLog "SUCCESS! Bootable USB created."
+                Write-UsbLog "=========================================="
+                Set-UsbStatus "Bootable USB created successfully!"
+                [System.Windows.MessageBox]::Show("Bootable USB created successfully!`n`nYou can now use $($drive.DriveLetter) to boot your computer.", "Success", "OK", "Information")
+            } else {
+                throw "File copy failed"
+            }
+            
+        } catch {
+            Write-UsbLog "ERROR: $($_.Exception.Message)"
+            Set-UsbStatus "Failed: $($_.Exception.Message)"
+            [System.Windows.MessageBox]::Show("Failed to create bootable USB:`n$($_.Exception.Message)", "Error", "OK", "Error")
+        } finally {
+            Set-UsbProgress 0 $false
+            $BtnUsbWrite.IsEnabled = $true
+            $BtnUsbCancel.IsEnabled = $false
+            Refresh-UsbDriveList
+        }
+    })
+}
+
+# Event: Cancel
+if ($BtnUsbCancel) {
+    $BtnUsbCancel.Add_Click({
+        $script:UsbCancelRequested = $true
+        Write-UsbLog "Cancel requested..."
+        Set-UsbStatus "Cancelling..."
+    })
+}
+
+# Initial refresh of USB drives
+Refresh-UsbDriveList
+
 # ==================== HASH CALCULATOR HANDLERS ====================
 if ($BtnHashFile) {
     $BtnHashFile.Add_Click({
@@ -5846,6 +6344,7 @@ MEDIA CONVERSION TAB:
 - Video Combiner: Merge multiple videos into one
 - Graphics Conversion: Convert images between formats
 - Image Resize: Resize images to specific dimensions
+- Bootable USB: Create bootable USB drives from ISO files
 
 DUPLICATES TAB:
 - Scan folders for duplicate files
