@@ -24,6 +24,9 @@
             <TextBox Width="200" Text="{Binding Patterns, UpdateSourceTrigger=PropertyChanged}" />
             <CheckBox IsChecked="{Binding DryRun}" Content="Dry run" VerticalAlignment="Center" Margin="8,0,8,0" />
             <Button Content="Scan" Command="{Binding ScanCommand}" Width="80" />
+            <TextBlock VerticalAlignment="Center" Margin="8,0,8,0">Backup path:</TextBlock>
+            <TextBox Width="200" Text="{Binding BackupPath, UpdateSourceTrigger=PropertyChanged}" />
+            <Button Content="Delete" Command="{Binding DeleteCommand}" Width="80" Margin="8,0,0,0" />
         </StackPanel>
         <ListView Grid.Row="2" ItemsSource="{Binding Results}">
             <ListView.View>
