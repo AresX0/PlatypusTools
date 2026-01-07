@@ -21,3 +21,20 @@ Create installer (recommended approach):
 Notes:
 - We will port each PowerShell feature into the Core library under `Services` and then call from UI.
 - Start with dry-run behaviors & unit tests to ensure safety for destructive operations.
+
+Logging:
+- The app reads `appsettings.json` from the application directory at startup.
+- Supported keys:
+  - `LogFile`: path to the log file (e.g., `C:\Logs\platypustools.log`). If omitted, the app writes to `%LOCALAPPDATA%\\PlatypusTools\\logs\\platypustools.log` by default.
+  - `LogLevel`: minimum log level (Trace, Debug, Info, Warn, Error). Case-insensitive; default is `Info`.
+
+Sample `appsettings.json`:
+
+```json
+{
+  "LogFile": "C:\\Users\\<you>\\AppData\\Local\\PlatypusTools\\logs\\platypustools.log",
+  "LogLevel": "Debug"
+}
+```
+
+Tip: Set a custom `LogFile` when running in CI or a managed environment to collect logs centrally.
