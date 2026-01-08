@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$SourceRoot = (Split-Path -Parent $MyInvocation.MyCommand.Path),
     [string]$DestinationRoot = 'C:\ProgramFiles\PlatypusUtils'
 )
@@ -11,7 +11,11 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 
 function Ensure-Dir {
+    [switch]$NonInteractive
     param([Parameter(Mandatory)][string]$Path)
+. "$PSScriptRoot\\Tools\\NonInteractive.ps1"
+Set-NonInteractive -Enable:$NonInteractive
+Require-Parameter 'Path' 
     if (-not (Test-Path -LiteralPath $Path)) {
         New-Item -ItemType Directory -Path $Path -Force | Out-Null
     }
@@ -61,3 +65,4 @@ Write-Host "Assets placed in $($paths.Assets)"
 Write-Host "Data folders prepared: $($paths.DataSystem), $($paths.DataVideo)"
 Write-Host "Logs folders prepared: $($paths.LogsSystem), $($paths.LogsVideo)"
 Write-Host "You can place ffmpeg/exiftool binaries under $($paths.Tools) for VideoEditor."
+

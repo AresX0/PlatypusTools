@@ -1,11 +1,15 @@
-<#
+﻿<#
 Create a timestamped backup and a versioned working copy for PlatypusTools.ps1.
 Usage: .\new_version.ps1 -Version 1.2.0 -Note "Short changelog summary"
 #>
 param(
     [Parameter(Mandatory)][string]$Version,
     [string]$Note = ''
+    [switch]$NonInteractive
 )
+. "$PSScriptRoot\\Tools\\NonInteractive.ps1"
+Set-NonInteractive -Enable:$NonInteractive
+Require-Parameter 'Version' 
 $ts = (Get-Date).ToString('yyyyMMdd_HHmmss')
 $backupsDir = Join-Path $PSScriptRoot '..\backups' | Resolve-Path -Relative | ForEach-Object { $_ }
 if (-not (Test-Path -LiteralPath $backupsDir)) { New-Item -ItemType Directory -Path $backupsDir -Force | Out-Null }
@@ -28,3 +32,4 @@ Add-Content -Path $cl -Value $entry
 Write-Output "Backup created: $bk"
 Write-Output "Working copy created: $wc"
 Write-Output "CHANGELOG.md updated"
+
